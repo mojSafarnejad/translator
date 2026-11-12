@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="hy">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Հայերեն ⇄ فارسی</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Armenian:wght@400;700&family=Vazirmatn:wght@400;700&display=swap">
+<style>
+:root{--bg:#f6f4ef;--fg:#1d1b16;--mut:#706b5f;--card:#fff;--line:#e2ded3;--hy:#b4452b;--fa:#1f6f5c}
+@media (prefers-color-scheme:dark){:root{--bg:#15130f;--fg:#f1eee6;--mut:#a29c8c;--card:#211e18;--line:#36322a;--hy:#e0785c;--fa:#2f9a80}}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:"Noto Sans Armenian","Vazirmatn",system-ui,-apple-system,"Segoe UI",sans-serif;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
+.app{height:100%;display:flex;flex-direction:column;gap:14px;padding:14px;box-sizing:border-box;max-width:900px;margin:0 auto}
+.screen{flex:1;min-height:0;background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
+.status{font-size:14px;color:var(--mut);display:flex;justify-content:space-between;gap:12px;min-height:1.3em}
+.heard{font-size:16px;color:var(--mut);min-height:1.4em}
+.out{font-size:clamp(26px,6vw,44px);line-height:1.6;font-weight:700;margin:auto 0}
+.out.fa{color:var(--fa)}.out.hy{color:var(--hy)}
+.hint{color:var(--mut);font-size:15px;text-align:center;margin:auto 0;line-height:1.9}
+.warn{font-size:13px;color:var(--mut);text-align:center}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+button{border:0;border-radius:22px;padding:22px 12px;min-height:150px;color:#fff;font:inherit;font-size:clamp(16px,4.2vw,21px);font-weight:700;line-height:1.5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;cursor:pointer;transition:transform .1s,opacity .2s}
+button svg{width:44px;height:44px}
+#bHy{background:var(--hy)}#bFa{background:var(--fa)}
+#bFa{font-family:"Vazirmatn","Noto Sans Armenian",system-ui,sans-serif}
+button:active:not(:disabled){transform:scale(.97)}
+button:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.5)}
+button.on{animation:pulse 1.1s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(128,128,128,.5)}100%{box-shadow:0 0 0 22px rgba(128,128,128,0)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="screen">
+    <div class="status"><span id="stHy" lang="hy"></span><span id="stFa" lang="fa" dir="rtl"></span></div>
+    <div class="heard" id="heard"></div>
+    <div class="hint" id="hint">Սեղմեք կոճակը և խոսեք։<br><span dir="rtl">دکمه را بزنید و صحبت کنید.</span></div>
+    <div class="out" id="out" style="display:none"></div>
+    <div class="warn" id="warn" dir="rtl"></div>
+  </div>
+  <div class="btns">
+    <button id="bHy" lang="hy"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4zm6-4a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93V22h2v-3.07A8 8 0 0 0 20 11z"/></svg><span id="lHy"></span></button>
+    <button id="bFa" lang="fa" dir="rtl"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4zm6-4a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93V22h2v-3.07A8 8 0 0 0 20 11z"/></svg><span id="lFa"></span></button>
+  </div>
+</div>
+<script>
+// ⚠ Put your Cloudflare Worker URL here (NOT your Gemini key).
+const WORKER_URL = "https://persianarmenian.nova-6b8927.workers.dev";
+
+const $ = id => document.getElementById(id);
+const LANG = {
+  hy: {rec: "hy-AM", tts: "hy", dir: "ltr",
+       idle: "Սեղմեք և խոսեք հայերեն", live: "Լսում եմ… սեղմեք՝ ավարտելու համար", wait: "Սպասեք, թարգմանությունը շարունակվում է…"},
+  fa: {rec: "fa-IR", tts: "fa", dir: "rtl",
+       idle: "بزنید و فارسی صحبت کنید", live: "در حال شنیدن… برای پایان بزنید", wait: "صبر کنید، ترجمه در حال پخش است…"}
+};
+const btn = {hy: $("bHy"), fa: $("bFa")}, lab = {hy: $("lHy"), fa: $("lFa")};
+let mode = "idle", rec = null;   // idle | listen | wait
+
+function status(hy, fa){ $("stHy").textContent = hy; $("stFa").textContent = fa; }
+
+// One place controls both buttons, so a button can never be pressed while a translation is running.
+function setMode(m, active){
+  mode = m;
+  for (const k in btn){
+    const on = m === "listen" && k === active;
+    btn[k].classList.toggle("on", on);
+    btn[k].disabled = m === "idle" ? false : !on;
+    lab[k].textContent = m === "idle" ? LANG[k].idle : on ? LANG[k].live : LANG[k].wait;
+  }
+}
+
+function showOut(to, text){
+  const o = $("out");
+  $("hint").style.display = "none";
+  o.style.display = ""; o.className = "out " + to; o.dir = LANG[to].dir; o.lang = to; o.textContent = text;
+}
+
+async function post(body, ms){
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
+  try {
+    const res = await fetch(WORKER_URL, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body), signal: ctl.signal});
+    if (!res.ok){
+      let m = "HTTP " + res.status;
+      try { const j = await res.json(); m = (j.error || m) + " " + (j.detail || ""); } catch (e) {}
+      throw new Error(m);
+    }
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+
+// ---------- Recording (works on iPhone Safari/Chrome and desktop: raw microphone -> 16 kHz WAV) ----------
+async function start(from){
+  if (mode === "listen" && rec && rec.from === from){ rec.stop(); return; }
+  if (mode !== "idle") return;
+  unlockAudio();                                   // must happen inside the tap for iPhone
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  $("warn").textContent = ""; $("heard").textContent = "";
+  setMode("listen", from); status("Լսում եմ…", "در حال شنیدن…");
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+  } catch (e) {
+    setMode("idle");
+    status("Խոսափողը արգելափակված է", "دسترسی به میکروفون مسدود است");
+    $("warn").textContent = "⚠ " + (e.name || e) + " — در تنظیمات مرورگر اجازهٔ میکروفون را بدهید.";
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC(); try { await ctx.resume(); } catch (e) {}
+  const src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1), mute = ctx.createGain();
+  mute.gain.value = 0;
+  const chunks = []; let heard = false, last = 0, stopped = false;
+  const t0 = performance.now();
+  const finish = () => {
+    if (stopped) return; stopped = true; rec = null;
+    try { proc.disconnect(); src.disconnect(); } catch (e) {}
+    stream.getTracks().forEach(t => t.stop());
+    const sr = ctx.sampleRate; ctx.close().catch(() => {});
+    if (!heard){ setMode("idle"); status("Ոչինչ չլսվեց, կրկին փորձեք", "چیزی شنیده نشد، دوباره تلاش کنید"); return; }
+    run(from, toWav(chunks, sr));
+  };
+  proc.onaudioprocess = e => {
+    if (stopped) return;
+    const d = e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d));
+    let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+    const now = performance.now();
+    if (Math.sqrt(s / d.length) > 0.015){ heard = true; last = now; }
+    // stop after 1.6 s of silence once speech started, after 9 s with no speech, or at 60 s
+    if ((heard && now - last > 1600) || (!heard && now - t0 > 9000) || now - t0 > 60000) finish();
+  };
+  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  rec = {from, stop: finish};
+}
+
+function toWav(chunks, sr){
+  let n = 0; for (const c of chunks) n += c.length;
+  const all = new Float32Array(n); let o = 0; for (const c of chunks){ all.set(c, o); o += c.length; }
+  const R = 16000, ratio = sr / R, m = Math.floor(n / ratio), pcm = new Int16Array(m);
+  for (let i = 0; i < m; i++){
+    const a = Math.floor(i * ratio), b = Math.max(a + 1, Math.floor((i + 1) * ratio));
+    let s = 0; for (let j = a; j < b && j < n; j++) s += all[j];
+    const v = Math.max(-1, Math.min(1, s / (b - a))); pcm[i] = v < 0 ? v * 32768 : v * 32767;
+  }
+  const buf = new ArrayBuffer(44 + m * 2), dv = new DataView(buf);
+  const w = (p, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(p + i, t.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + m * 2, true); w(8, "WAVE"); w(12, "fmt "); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, R, true); dv.setUint32(28, R * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, "data"); dv.setUint32(40, m * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  const u8 = new Uint8Array(buf); let bin = "";
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+// ---------- Listen + translate (one Gemini call), then speak ----------
+async function run(from, audio){
+  const to = from === "hy" ? "fa" : "hy";
+  setMode("wait");
+  status("Թարգմանում եմ…", "در حال ترجمه…");
+  let out = "";
+  try {
+    const d = await post({action: "voice", from, to, audio}, 45000);
+    out = (d.translation || "").trim();
+    if (d.heard){ $("heard").textContent = d.heard; $("heard").dir = LANG[from].dir; }
+  } catch (e) {
+    setMode("idle");
+    status("Թարգմանության սխալ, կրկին փորձեք", "خطا در ترجمه، دوباره تلاش کنید");
+    $("warn").textContent = "⚠ " + e.message.slice(0, 250);
+    return;
+  }
+  if (!out){ setMode("idle"); status("Ոչինչ չլսվեց, կրկին փորձեք", "چیزی شنیده نشد، دوباره تلاش کنید"); return; }
+  // text appears in the listener's language exactly when the voice starts; buttons stay disabled until it ends
+  await speak(to, out, () => { status("Հնչում է…", "در حال پخش…"); showOut(to, out); });
+  setMode("idle"); status("", "");
+}
+
+// ---------- Speaking ----------
+// One reusable <audio>; "unlocking" it inside the button tap lets it play later on iPhone/Safari too.
+const player = new Audio();
+const SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+function unlockAudio(){ try { player.src = SILENT; player.play().catch(() => {}); } catch (e) {} }
+
+// Armenian and Persian voices come from Gemini TTS; the device voice is only a fallback.
+async function speak(to, text, onStart){
+  let shown = false;
+  const show = () => { if (!shown){ shown = true; onStart(); } };
+  try {
+    const d = await post({action: "tts", text}, 40000);
+    if (!d.audio) throw new Error("no audio");
+    await new Promise((ok, fail) => {
+      const wd = setTimeout(ok, 120000);
+      player.onended = () => { clearTimeout(wd); ok(); };
+      player.onerror = () => { clearTimeout(wd); fail(new Error("audio element error")); };
+      player.src = "data:" + (d.mime || "audio/wav") + ";base64," + d.audio;
+      player.play().then(show, e => { clearTimeout(wd); fail(e); });
+    });
+    return;
+  } catch (e) {
+    $("warn").textContent = "⚠ Gemini TTS: " + String(e.message || e).slice(0, 250) + " — صدای دستگاه استفاده شد.";
+  }
+  show();
+  await speakBrowser(to, text);
+}
+
+function speakBrowser(to, text){
+  return new Promise(done => {
+    if (!window.speechSynthesis) return done();
+    const parts = text.match(/[^.!?؟։\n]+[.!?؟։]*/g) || [text];
+    const v = speechSynthesis.getVoices().find(x => x.lang.toLowerCase().replace("_", "-").startsWith(LANG[to].tts));
+    let i = 0, fin = false;
+    const finish = () => { if (!fin){ fin = true; clearTimeout(wd); done(); } };
+    const wd = setTimeout(finish, 10000 + text.length * 200);
+    const next = () => {
+      if (i >= parts.length) return finish();
+      const t = parts[i++].trim();
+      if (!t) return next();
+      const u = new SpeechSynthesisUtterance(t);
+      if (v){ u.voice = v; u.lang = v.lang; } else u.lang = LANG[to].rec;
+      u.onend = next; u.onerror = next;
+      speechSynthesis.speak(u);
+    };
+    speechSynthesis.cancel(); next();
+  });
+}
+
+setMode("idle");
+btn.hy.onclick = () => start("hy");
+btn.fa.onclick = () => start("fa");
+</script>
+</body>
+</html>
